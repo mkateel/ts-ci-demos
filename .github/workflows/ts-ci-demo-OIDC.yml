@@ -1,0 +1,96 @@
+name: GH Action Demo using OIDC
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: "Audience for the OIDC token"
+        required: true
+        default: "api.tailscale.com/YOUR_CLIENT_ID"
+      client_id:
+        description: "Client ID for the Tailscale OIDC JWT exchange"
+        required: true
+        default: "YOUR_CLIENT_ID"
+      tailnet:
+        description: "Tailnet name for the demo API request"
+        required: true
+        default: "yourtailnet"
+
+jobs:
+  tailscale-access:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get OIDC token from GitHub Actions
+        id: get_oidc_token
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const jwt = await core.getIDToken('${{ github.event.inputs.audience }}')
+            core.setOutput('jwt', jwt)
+
+      - name: Perform OIDC token exchange with Tailscale
+        id: exchange_token
+        run: |
+          # Exchange GitHub OIDC token for Tailscale API access token
+          RESPONSE=$(curl -s -X POST https://api.tailscale.com/api/v2/oauth/token-exchange \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "client_id=${{ github.event.inputs.client_id }}" \
+            -d "jwt=${{ steps.get_oidc_token.outputs.jwt }}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+
+          # Use access token to generate an ephemeral auth key
+          AUTHRESPONSE=$(curl -s -X POST https://api.tailscale.com/api/v2/tailnet/${{ github.event.inputs.tailnet }}/keys \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            --data '{
+              "description": "dev access",
+              "capabilities": {
+                "devices": {
+                  "create": {
+                    "reusable": false,
+                    "ephemeral": true,
+                    "preauthorized": true,
+                    "tags": [
+                      "tag:ci"
+                    ]
+                  }
+                }
+              },
+              "expirySeconds": 86400,
+              "scopes": [
+                "all:read"
+              ],
+              "tags": [
+                "tag:ci"
+              ]
+            }')
+          AUTH_KEY=$(echo "$AUTHRESPONSE" | jq -r '.key')
+          echo "::add-mask::$AUTH_KEY"
+          echo "authkey=$AUTH_KEY" >> $GITHUB_OUTPUT
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: "${{ steps.exchange_token.outputs.authkey }}"
+          tags: tag:ci
+          hostname: github-ci-demo-runner
+
+      - name: Ping web server
+        run: tailscale ping 10.0.1.235
+
+      - name: Curl to web server
+        run: curl -v http://10.0.1.235:33/
+
+      - name: Sleep to keep node alive for demo
+        run: |
+          echo "Sleeping for 180 seconds to keep Tailscale node online for demo purposes..."
+          sleep 180

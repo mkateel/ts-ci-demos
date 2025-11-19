@@ -1,0 +1,30 @@
+name: GH Action Demo using oAuth
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tailscale-access:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Connect to Tailscale
+      uses: tailscale/github-action@v4
+      with:
+        oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+        oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+        tags: tag:ci
+        hostname: github-ci-demo-runner
+
+    - name: Ping web server
+      run: tailscale ping 10.0.1.235
+
+    - name: Curl to web server
+      run: curl -v http://10.0.1.235:33/
+
+    - name: Sleep to keep node alive for demo
+      run: |
+        echo "Sleeping for 180 seconds to keep Tailscale node online for demo purposes..."
+        sleep 180
